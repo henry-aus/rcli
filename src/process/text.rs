@@ -1,8 +1,23 @@
 use crate::{process_genpass, TextSignFormat};
 use anyhow::Result;
+
+use chacha20poly1305::aead::generic_array::typenum::Unsigned;
+use chacha20poly1305::aead::generic_array::GenericArray;
+
+use chacha20poly1305::{
+    aead::{Aead, AeadCore, KeyInit, OsRng},
+    ChaCha20Poly1305,
+};
+use sha2::Digest;
+use sha2::Sha256;
+
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use rand::rngs::OsRng;
-use std::{collections::HashMap, io::Read};
+use std::{
+    collections::HashMap,
+    io::{Read, Write},
+};
 
 pub trait TextSigner {
     // signer could sign any input data
@@ -12,6 +27,14 @@ pub trait TextSigner {
 pub trait TextVerifier {
     // verifier could verify any input data
     fn verify(&self, reader: &mut dyn Read, sig: &[u8]) -> Result<bool>;
+}
+
+pub trait Encryptor {
+    fn encrypt(&self, reader: &mut dyn Read) -> Result<Vec<u8>>;
+}
+
+pub trait Decryptor {
+    fn decrypt(&self, reader: &mut dyn Read) -> Result<Vec<u8>>;
 }
 
 pub struct Blake3 {
@@ -24,6 +47,10 @@ pub struct Ed25519Signer {
 
 pub struct Ed25519Verifier {
     key: VerifyingKey,
+}
+
+pub struct ChaChaPoly1305 {
+    key: String,
 }
 
 impl TextSigner for Blake3 {
@@ -60,6 +87,52 @@ impl TextVerifier for Ed25519Verifier {
         let sig = (&sig[..64]).try_into()?;
         let signature = Signature::from_bytes(sig);
         Ok(self.key.verify(&buf, &signature).is_ok())
+    }
+}
+
+impl ChaChaPoly1305 {
+    pub fn new(key: String) -> Self {
+        Self { key }
+    }
+
+    fn normalized_key(&self) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(self.key.as_bytes());
+        let result = hasher.finalize();
+        let mut hash_bytes = [0u8; 32];
+        hash_bytes.copy_from_slice(&result[..]);
+        hash_bytes
+    }
+}
+
+impl Encryptor for ChaChaPoly1305 {
+    fn encrypt(&self, reader: &mut dyn Read) -> Result<Vec<u8>> {
+        let key = self.normalized_key();
+        let cipher = ChaCha20Poly1305::new_from_slice(&key)?;
+        let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+        let mut buf = Vec::new();
+        let _ = reader.read_to_end(&mut buf);
+        let mut obsf = cipher.encrypt(&nonce, &buf[..])?;
+        obsf.splice(..0, nonce.iter().copied());
+        let encrypt_base64_result = URL_SAFE_NO_PAD.encode(obsf);
+        Ok(encrypt_base64_result.as_bytes().to_vec())
+    }
+}
+
+impl Decryptor for ChaChaPoly1305 {
+    fn decrypt(&self, reader: &mut dyn Read) -> Result<Vec<u8>> {
+        type NonceSize = <ChaCha20Poly1305 as AeadCore>::NonceSize;
+        let key = self.normalized_key();
+        let cipher = ChaCha20Poly1305::new_from_slice(&key)?;
+        let mut buf = Vec::new();
+        let _ = reader.read_to_end(&mut buf);
+        let base64_decode_result = URL_SAFE_NO_PAD.decode(buf)?;
+        // Get nonce from payload.
+        let (nonce, ciphertext) = base64_decode_result.split_at(NonceSize::to_usize());
+        let nonce = GenericArray::from_slice(nonce);
+        let plaintext = cipher.decrypt(nonce, ciphertext)?;
+        //String::from_utf8(plaintext).unwrap()
+        Ok(plaintext)
     }
 }
 
@@ -149,6 +222,28 @@ pub fn process_text_key_generate(format: TextSignFormat) -> Result<HashMap<&'sta
     }
 }
 
+pub fn process_text_encrypt(
+    reader: &mut dyn Read,
+    writer: &mut dyn Write,
+    key: String,
+) -> Result<()> {
+    let encryptor = ChaChaPoly1305::new(key);
+    let content = encryptor.encrypt(reader)?;
+    let _ = writer.write_all(&content[..]);
+    Ok(())
+}
+
+pub fn process_text_decrypt(
+    reader: &mut dyn Read,
+    writer: &mut dyn Write,
+    key: String,
+) -> Result<()> {
+    let decriptor = ChaChaPoly1305::new(key);
+    let content = decriptor.decrypt(reader)?;
+    let _ = writer.write_all(&content[..]);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,6 +270,34 @@ mod tests {
         let sig = URL_SAFE_NO_PAD.decode(sig)?;
         let ret = process_text_verify(&mut reader, KEY, &sig, format)?;
         assert!(ret);
+        Ok(())
+    }
+
+    #[test]
+    fn test_process_text_encrypt_decrypt() -> Result<()> {
+        let mut encrypt_reader = "hello".as_bytes();
+        let mut encrypt_writer = Vec::new();
+        let mut decrypt_writer = Vec::new();
+        let key = "abc".to_string();
+        let _ = process_text_encrypt(&mut encrypt_reader, &mut encrypt_writer, key.clone());
+        //println!("{:?}", String::from_utf8(encrypt_writer.clone()));
+        let mut decrypt_reader: &[u8] = &encrypt_writer;
+        let _ = process_text_decrypt(&mut decrypt_reader, &mut decrypt_writer, key);
+        let result = String::from_utf8(decrypt_writer)?;
+        //println!("{:?}", &result);
+        assert_eq!("hello", result);
+        Ok(())
+    }
+
+    #[test]
+    fn test_process_text_decrypt() -> Result<()> {
+        let mut decrypt_writer = Vec::new();
+        let key = "abc".to_string();
+        let mut decrypt_reader: &[u8] = "YHrdNb2VSVEaj7iYn2zTQoE_60QxY6gsKYqzdEiAiPbH".as_bytes();
+        let _ = process_text_decrypt(&mut decrypt_reader, &mut decrypt_writer, key);
+        let result = String::from_utf8(decrypt_writer)?;
+        //println!("{:?}", &result);
+        assert_eq!("hello", result);
         Ok(())
     }
 }

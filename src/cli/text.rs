@@ -1,6 +1,6 @@
 use crate::{
-    get_content, get_reader, process_text_key_generate, process_text_sign, process_text_verify,
-    CmdExector,
+    get_content, get_reader, get_writer, process_text_decrypt, process_text_encrypt,
+    process_text_key_generate, process_text_sign, process_text_verify, CmdExector,
 };
 
 use super::{verify_file, verify_path};
@@ -19,6 +19,10 @@ pub enum TextSubCommand {
     Verify(TextVerifyOpts),
     #[command(about = "Generate a random blake3 key or ed25519 key pair")]
     Generate(KeyGenerateOpts),
+    #[command(about = "Encrypt a text with chacha20 encryption")]
+    Encrypt(EncryptOpts),
+    #[command(about = "Decrypt with chacha20 encryption")]
+    Decrypt(DecryptOpts),
 }
 
 #[derive(Debug, Parser)]
@@ -49,6 +53,26 @@ pub struct KeyGenerateOpts {
     pub format: TextSignFormat,
     #[arg(short, long, value_parser = verify_path)]
     pub output_path: PathBuf,
+}
+
+#[derive(Debug, Parser)]
+pub struct EncryptOpts {
+    #[arg(short, long, value_parser = verify_file, default_value = "-")]
+    pub input: String,
+    #[arg(short, long)]
+    pub key: String,
+    #[arg(short, long)]
+    pub output: Option<String>,
+}
+
+#[derive(Debug, Parser)]
+pub struct DecryptOpts {
+    #[arg(short, long, value_parser = verify_file, default_value = "-")]
+    pub input: String,
+    #[arg(short, long)]
+    pub key: String,
+    #[arg(short, long)]
+    pub output: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -122,5 +146,21 @@ impl CmdExector for KeyGenerateOpts {
             fs::write(self.output_path.join(k), v).await?;
         }
         Ok(())
+    }
+}
+
+impl CmdExector for EncryptOpts {
+    async fn execute(self) -> anyhow::Result<()> {
+        let mut reader = get_reader(&self.input)?;
+        let mut writer = get_writer(&self.output.unwrap_or("-".to_string()))?;
+        process_text_encrypt(&mut reader, &mut writer, self.key)
+    }
+}
+
+impl CmdExector for DecryptOpts {
+    async fn execute(self) -> anyhow::Result<()> {
+        let mut reader = get_reader(&self.input)?;
+        let mut writer = get_writer(&self.output.unwrap_or("-".to_string()))?;
+        process_text_decrypt(&mut reader, &mut writer, self.key)
     }
 }

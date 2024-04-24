@@ -26,7 +26,7 @@ pub enum SubCommand {
     GenPass(GenPassOpts),
     #[command(subcommand, about = "Base64 encode/decode")]
     Base64(Base64SubCommand),
-    #[command(subcommand, about = "Text sign/verify")]
+    #[command(subcommand, about = "Text sign/verify/encrypt/decrypt")]
     Text(TextSubCommand),
     #[command(subcommand, about = "HTTP server")]
     Http(HttpSubCommand),
