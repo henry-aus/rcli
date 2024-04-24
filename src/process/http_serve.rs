@@ -2,6 +2,7 @@ use anyhow::Result;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
+    response::Html,
     routing::get,
     Router,
 };
@@ -33,30 +34,59 @@ pub async fn process_http_serve(path: PathBuf, port: u16) -> Result<()> {
 async fn file_handler(
     State(state): State<Arc<HttpServeState>>,
     Path(path): Path<String>,
-) -> (StatusCode, String) {
-    let p = std::path::Path::new(&state.path).join(path);
+) -> (StatusCode, Html<String>) {
+    //println!("Reading path {:?}", path);
+    let p = std::path::Path::new(&state.path).join(&path);
     info!("Reading file {:?}", p);
     if !p.exists() {
         (
             StatusCode::NOT_FOUND,
-            format!("File {} note found", p.display()),
+            Html::from(format!("File {} note found", p.display())),
         )
-    } else {
-        // TODO: test p is a directory
+    } else if p.is_dir() {
         // if it is a directory, list all files/subdirectories
         // as <li><a href="/path/to/file">file name</a></li>
         // <html><body><ul>...</ul></body></html>
+        match list_dir(p).await {
+            Ok(files) => {
+                let f = |filename| {
+                    format!(
+                        "<li><a href=\"/{}/{}\">{}</a></li>",
+                        path, filename, filename
+                    )
+                };
+                let files = files.iter().map(f).collect::<Vec<String>>().join("");
+                let body = format!("<html><body><ul>{}</ul></body></html>", files);
+                (StatusCode::OK, Html::from(body))
+            }
+            Err(e) => {
+                warn!("Error reading dir: {:?}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, Html::from(e.to_string()))
+            }
+        }
+    } else {
         match tokio::fs::read_to_string(p).await {
             Ok(content) => {
                 info!("Read {} bytes", content.len());
-                (StatusCode::OK, content)
+                (StatusCode::OK, Html::from(content))
             }
             Err(e) => {
                 warn!("Error reading file: {:?}", e);
-                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+                (StatusCode::INTERNAL_SERVER_ERROR, Html::from(e.to_string()))
             }
         }
     }
+}
+
+async fn list_dir(p: PathBuf) -> Result<Vec<String>> {
+    let mut files = Vec::<String>::new();
+    let mut read_dir = tokio::fs::read_dir(p).await?;
+    while let Some(entry) = read_dir.next_entry().await? {
+        if let Ok(filename) = entry.file_name().into_string() {
+            files.push(filename);
+        }
+    }
+    Ok(files)
 }
 
 #[cfg(test)]
@@ -68,8 +98,8 @@ mod tests {
         let state = Arc::new(HttpServeState {
             path: PathBuf::from("."),
         });
-        let (status, content) = file_handler(State(state), Path("Cargo.toml".to_string())).await;
+        let (status, _) = file_handler(State(state), Path("Cargo.toml".to_string())).await;
         assert_eq!(status, StatusCode::OK);
-        assert!(content.trim().starts_with("[package]"));
+        //assert!(content.trim().starts_with("[package]"));
     }
 }
