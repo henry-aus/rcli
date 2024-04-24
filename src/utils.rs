@@ -17,7 +17,13 @@ pub fn get_writer(output: &str) -> Result<Box<dyn Write>> {
     let writer: Box<dyn Write> = if output == "-" {
         Box::new(std::io::stdout())
     } else {
-        Box::new(OpenOptions::new().create(true).open(output)?)
+        // if file not existing, create it.
+        Box::new(
+            OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .open(output)?,
+        )
     };
     Ok(writer)
 }

@@ -238,8 +238,8 @@ pub fn process_text_decrypt(
     writer: &mut dyn Write,
     key: String,
 ) -> Result<()> {
-    let decriptor = ChaChaPoly1305::new(key);
-    let content = decriptor.decrypt(reader)?;
+    let decryptor = ChaChaPoly1305::new(key);
+    let content = decryptor.decrypt(reader)?;
     let _ = writer.write_all(&content[..]);
     Ok(())
 }
